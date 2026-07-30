@@ -20,49 +20,70 @@ export const scrapeMovies = async (
         headers: { host },
     } = req;
 
-    $('main > div.container > section.archive')
-        .find('div.grid-archive > div#grid-wrapper > div.infscroll-item')
-        .each((i, el) => {
-            const parent: cheerio.Cheerio = $(el).find('article.mega-item');
-            const genres: string[] = [];
+    $('main article').each((i, el) => {
+        const link = $(el).find('figure > a[href]').first();
 
-            $(parent)
-                .find('footer')
-                .find('div.grid-categories > a')
-                .each((i, el2) => {
-                    const x: string[] = $(el2).attr('href')?.split('/') ?? [];
+        if (!link.length) return;
 
-                    if (x.length > 0 && x[1] === 'genre') {
-                        genres.push(x[2]);
-                    }
-                });
+        const href = link.attr('href') ?? '';
+        const movieId = href.split('/').filter(Boolean).pop() ?? '';
 
-            const movieId: string =
-                $(parent)
-                    .find('figure > a')
-                    .attr('href')
-                    ?.split('/')
-                    .reverse()[1] ?? '';
+        if (!movieId) return;
 
-            const obj = {} as IMovies;
+        const title =
+            $(el).find('h3.poster-title').text().trim() ||
+            link.find('img').attr('alt')?.replace(/\s*\(\d{4}\)$/, '').trim() ||
+            '';
 
-            obj['_id'] = movieId;
-            obj['title'] =
-                $(parent).find('figure > a > picture > img').attr('alt') ?? '';
-            obj['type'] = 'movie';
-            obj['posterImg'] = `https:${$(parent)
-                .find('figure > a > picture > img')
-                .attr('src')}`;
-            obj['rating'] = $(parent).find('figure').find('div.rating').text();
-            obj['url'] = `${protocol}://${host}/movies/${movieId}`;
-            obj['qualityResolution'] = $(parent)
-                .find('figure')
-                .find('div.quality')
-                .text();
-            obj['genres'] = genres;
+        const posterSrc =
+            link.find('img').attr('src') ??
+            link
+                .find('source[type="image/webp"]')
+                .attr('srcset')
+                ?.split(',')
+                .shift()
+                ?.trim()
+                .split(' ')
+                .shift() ??
+            '';
 
-            payload.push(obj);
-        });
+        const genres = Array.from(
+            new Set(
+                [
+                    $(el).find('meta[itemprop="genre"]').attr('content') ?? '',
+                    $(el).find('figcaption .genre').text(),
+                    $(el)
+                        .find('footer div.grid-categories > a')
+                        .map((_, el2) => $(el2).text())
+                        .get()
+                        .join(', '),
+                ]
+                    .join(',')
+                    .split(',')
+                    .map((genre) => genre.trim())
+                    .filter(Boolean)
+            )
+        );
+
+        const obj = {} as IMovies;
+
+        obj['_id'] = movieId;
+        obj['title'] = title;
+        obj['type'] = 'movie';
+        obj['posterImg'] = posterSrc.startsWith('http')
+            ? posterSrc
+            : `https:${posterSrc}`;
+        obj['rating'] =
+            $(el).find('[itemprop="ratingValue"]').text().trim() ||
+            $(el).find('div.rating').text().trim();
+        obj['url'] = `${protocol}://${host}/movies/${movieId}`;
+        obj['qualityResolution'] =
+            $(el).find('.label').first().text().trim() ||
+            $(el).find('div.quality').text().trim();
+        obj['genres'] = genres;
+
+        payload.push(obj);
+    });
 
     return payload;
 };
@@ -77,83 +98,85 @@ export const scrapeMovieDetails = async (
     req: Request,
     res: AxiosResponse
 ): Promise<IMovieDetails> => {
-    const { originalUrl } = req;
-
     const $: cheerio.Root = cheerio.load(res.data);
     const obj = {} as IMovieDetails;
 
-    const genres: string[] = [];
-    const directors: string[] = [];
-    const countries: string[] = [];
-    const casts: string[] = [];
+    const originalUrl = req.originalUrl;
+    const structuredData: Array<Record<string, unknown>> = [];
 
-    $('div.content').find('blockquote').find('strong').remove();
+    $('script[type="application/ld+json"]').each((_, el) => {
+        const raw = $(el).text().trim();
 
-    obj['_id'] = originalUrl.split('/').reverse()[0];
-    obj['title'] =
-        $('div.content-poster').find('figure > picture > img').attr('alt') ??
-        '';
-    obj['type'] = 'movie';
-    obj['posterImg'] = `https:${$('div.content-poster')
-        .find('figure > picture > img')
-        .attr('src')}`;
+        if (!raw) return;
 
-    $('div.content > div').each((i, el) => {
-        /* eslint-disable */
-        switch ($(el).find('h2').text().toLowerCase()) {
-            case 'durasi':
-                obj['duration'] = $(el).find('h3').text().trim();
-                break;
-            case 'imdb':
-                obj['rating'] = $(el).find('h3:nth-child(2)').text().trim();
-                break;
-            case 'diterbitkan':
-                obj['releaseDate'] = $(el).find('h3').text().trim();
-                break;
-            case 'kualitas':
-                obj['quality'] = $(el).find('h3 > a').text().trim();
-                break;
-            case 'sutradara':
-                $(el)
-                    .find('h3 > a')
-                    .each((i, el) => {
-                        directors.push($(el).text().trim());
-                    });
-                break;
-            case 'negara':
-                $(el)
-                    .find('h3 > a')
-                    .each((i, el) => {
-                        countries.push($(el).text());
-                    });
-                break;
-            case 'genre':
-                $(el)
-                    .find('h3 > a')
-                    .each((i, el) => {
-                        genres.push($(el).text());
-                    });
-                break;
-            case 'bintang film':
-                $(el)
-                    .find('h3')
-                    .each((i, el) => {
-                        casts.push($(el).find('a').text());
-                    });
-                break;
-            default:
-                break;
+        try {
+            const parsed = JSON.parse(raw) as
+                | Record<string, unknown>
+                | Array<Record<string, unknown>>;
+
+            if (Array.isArray(parsed)) {
+                structuredData.push(...parsed);
+                return;
+            }
+
+            if (Array.isArray(parsed['@graph'])) {
+                structuredData.push(...(parsed['@graph'] as Array<Record<string, unknown>>));
+                return;
+            }
+
+            structuredData.push(parsed);
+        } catch {
+            return;
         }
-        /* eslint-enable */
     });
 
-    obj['synopsis'] = $('div.content').find('blockquote').text();
+    const movieSchema = structuredData.find((entry) => {
+        const type = entry['@type'];
+
+        return type === 'Movie' || (Array.isArray(type) && type.includes('Movie'));
+    });
+
+    const toTextArray = (value: unknown): string[] => {
+        if (!value) return [];
+
+        const values = Array.isArray(value) ? value : [value];
+
+        return values
+            .map((item) => {
+                if (typeof item === 'string') return item.trim();
+
+                if (item && typeof item === 'object' && 'name' in item) {
+                    return String((item as Record<string, unknown>).name ?? '').trim();
+                }
+
+                return '';
+            })
+            .filter(Boolean);
+    };
+
+    const title = $('h1').first().text().trim() || String(movieSchema?.name ?? '');
+    const image =
+        String(movieSchema?.image ?? '') || $('meta[property="og:image"]').attr('content') || '';
+    const description =
+        String(movieSchema?.description ?? '') || $('meta[name="description"]').attr('content') || '';
+
+    obj['_id'] = originalUrl.split('/').reverse()[0];
+    obj['title'] = title;
+    obj['type'] = 'movie';
+    obj['posterImg'] = image;
+    obj['duration'] = String(movieSchema?.duration ?? '').trim();
+    obj['rating'] = String(movieSchema?.aggregateRating && typeof movieSchema.aggregateRating === 'object' && 'ratingValue' in movieSchema.aggregateRating ? (movieSchema.aggregateRating as Record<string, unknown>).ratingValue ?? '' : '').trim();
+    obj['releaseDate'] = String(movieSchema?.datePublished ?? '').trim();
+    obj['quality'] = $('meta[property="og:video:tag"]').attr('content') ?? '';
+    obj['synopsis'] = description;
     obj['trailerUrl'] =
-        $('div.action-player').find('a.fancybox').attr('href') ?? '';
-    obj['genres'] = genres;
-    obj['directors'] = directors;
-    obj['countries'] = countries;
-    obj['casts'] = casts;
+        $('a[href*="youtube.com/watch"]').first().attr('href') ??
+        $('a.fancybox').first().attr('href') ??
+        '';
+    obj['genres'] = toTextArray(movieSchema?.genre);
+    obj['directors'] = toTextArray(movieSchema?.director);
+    obj['countries'] = toTextArray(movieSchema?.country);
+    obj['casts'] = toTextArray(movieSchema?.actor);
 
     return obj;
 };

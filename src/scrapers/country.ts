@@ -21,27 +21,28 @@ export const scrapeSetOfCountries = async (
         headers: { host },
     } = req;
 
-    $('select#country > option').each((i, el) => {
-        const target: string[] = $(el).text().split(' ').reverse();
-        const parameters = [...target];
-        parameters.shift();
+    const seen = new Set<string>();
+
+    $('select[name="country"] option').each((i, el) => {
+        const parameter = $(el).attr('value')?.trim() ?? '';
+        const name = $(el).text().trim();
+
+        if (!parameter || !name || name.startsWith('-') || seen.has(parameter)) {
+            return;
+        }
+
+        seen.add(parameter);
+
+        const country = countries.find((item) => item.parameter === parameter);
 
         const obj = {} as ISetOfCountries;
 
-        countries.map((country) => {
-            if (country.parameter === parameters.join('-').toLowerCase()) {
-                obj['parameter'] = country.parameter;
-                obj['name'] = country.name;
-                obj['numberOfContents'] = Number(
-                    target[0].substring(1, target[0].length - 1)
-                );
-                obj[
-                    'url'
-                ] = `${protocol}://${host}/countries/${country.parameter}`;
+        obj['parameter'] = parameter;
+        obj['name'] = country?.name ?? name;
+        obj['numberOfContents'] = 0;
+        obj['url'] = `${protocol}://${host}/countries/${parameter}`;
 
-                payload.push(obj);
-            }
-        });
+        payload.push(obj);
     });
 
     return payload;

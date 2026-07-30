@@ -16,17 +16,22 @@ export const scrapeDownloads = async (
 ): Promise<IDownloads[]> => {
     const $: cheerio.Root = cheerio.load(res.data);
 
-    let downloads: IDownloads[] = [];
+    const downloads: IDownloads[] = [];
+    const seen = new Set<string>();
 
-    $('tbody > tr').each(function (i, el) {
-        let server = $(el).find('strong').text()!;
-        let link = $(el).find('a').attr('href')!;
-        //@ts-ignore
-        let quality = $(el).find('a').attr('class').substring(9, 13);
+    $('a[href*="dadadidi.de"]').each((i, el) => {
+        const link = $(el).attr('href') ?? '';
+
+        if (!link || seen.has(link)) {
+            return;
+        }
+
+        seen.add(link);
+
         downloads.push({
-            server,
+            server: $(el).text().trim() || 'Download',
             link,
-            quality,
+            quality: '',
         });
     });
 

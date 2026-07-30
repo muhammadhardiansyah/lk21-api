@@ -20,21 +20,25 @@ export const scrapeSetOfYears = async (
         headers: { host },
     } = req;
 
-    $('select#year > option').each((i, el) => {
-        const target: string[] = $(el).text().split(' ');
+    const seen = new Set<string>();
+
+    $('select[name="tahun"] option').each((i, el) => {
+        const parameter = $(el).attr('value')?.trim() ?? '';
+
+        if (!parameter || parameter === '0' || seen.has(parameter)) {
+            return;
+        }
+
+        seen.add(parameter);
+
         const obj = {} as ISetOfYears;
 
-        obj['parameter'] = target[0];
-        obj['numberOfContents'] = Number(
-            target[1].substring(1, target[1].length - 1)
-        );
-        obj['url'] = `${protocol}://${host}/years/${target[0]}`;
+        obj['parameter'] = parameter;
+        obj['numberOfContents'] = 0;
+        obj['url'] = `${protocol}://${host}/years/${parameter}`;
 
         payload.push(obj);
     });
-
-    // the first element doesn't contain the year
-    payload.shift();
 
     return payload;
 };

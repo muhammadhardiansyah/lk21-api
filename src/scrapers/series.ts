@@ -20,50 +20,69 @@ export const scrapeSeries = async (
         protocol,
     } = req;
 
-    $('main > div.container > section.archive')
-        .find('div.grid-archive > div#grid-wrapper > div.infscroll-item')
-        .each((i, el) => {
-            const parent: cheerio.Cheerio = $(el).find('article.mega-item');
-            const genres: string[] = [];
+    $('main article').each((i, el) => {
+        const link = $(el).find('figure > a[href]').first();
 
-            $(parent)
-                .find('footer')
-                .find('div.grid-categories > a')
-                .each((i, el2) => {
-                    const x: string[] = $(el2).attr('href')?.split('/') ?? [];
+        if (!link.length) return;
 
-                    if (x.length > 0 && x[1] === 'genre') {
-                        genres.push(x[2]);
-                    }
-                });
+        const href = link.attr('href') ?? '';
+        const seriesId = href.split('/').filter(Boolean).pop() ?? '';
 
-            const seriesId: string =
-                $(parent)
-                    .find('figure > a')
-                    .attr('href')
-                    ?.split('/')
-                    .reverse()[1] ?? '';
+        if (!seriesId) return;
 
-            const obj = {} as ISeries;
+        const genres = Array.from(
+            new Set(
+                [
+                    $(el).find('meta[itemprop="genre"]').attr('content') ?? '',
+                    $(el).find('figcaption .genre').text(),
+                    $(el)
+                        .find('footer div.grid-categories > a')
+                        .map((_, el2) => $(el2).text())
+                        .get()
+                        .join(', '),
+                ]
+                    .join(',')
+                    .split(',')
+                    .map((genre) => genre.trim())
+                    .filter(Boolean)
+            )
+        );
 
-            obj['_id'] = seriesId;
-            obj['title'] =
-                $(parent).find('figure > a > picture > img').attr('alt') ?? '';
-            obj['type'] = 'series';
-            obj['posterImg'] = `https:${$(parent)
-                .find('figure > a > picture > img')
-                .attr('src')}`;
-            obj['episode'] = Number(
-                $(parent)
-                    .find('figure > div.grid-meta > div.last-episode > span')
-                    .text()
-            );
-            obj['rating'] = $(parent).find('figure').find('div.rating').text();
-            obj['url'] = `${protocol}://${host}/series/${seriesId}`;
-            obj['genres'] = genres;
+        const obj = {} as ISeries;
 
-            payload.push(obj);
-        });
+        obj['_id'] = seriesId;
+        obj['title'] =
+            $(el).find('h3.poster-title').text().trim() ||
+            link.find('img').attr('alt')?.replace(/\s*\(\d{4}\)$/, '').trim() ||
+            '';
+        obj['type'] = 'series';
+        obj['posterImg'] =
+            link.find('img').attr('src') ??
+            link.find('img').attr('data-src') ??
+            link.find('img').attr('data-lazy-src') ??
+            link
+                .find('source[type="image/webp"]')
+                .attr('srcset')
+                ?.split(',')
+                .shift()
+                ?.trim()
+                .split(' ')
+                .shift() ??
+            '';
+        const episodeText =
+            $(el).find('.last-episode span').text().trim() ||
+            $(el).find('.episode').text().trim() ||
+            '0';
+
+        obj['episode'] = Number(episodeText) || 0;
+        obj['rating'] =
+            $(el).find('[itemprop="ratingValue"]').text().trim() ||
+            $(el).find('div.rating').text().trim();
+        obj['url'] = `${protocol}://${host}/series/${seriesId}`;
+        obj['genres'] = genres;
+
+        payload.push(obj);
+    });
 
     return payload;
 };
@@ -78,102 +97,98 @@ export const scrapeSeriesDetails = async (
     req: Request,
     res: AxiosResponse
 ): Promise<ISeriesDetails> => {
-    const { originalUrl } = req;
-
     const $: cheerio.Root = cheerio.load(res.data);
     const obj = {} as ISeriesDetails;
 
-    const genres: string[] = [];
-    const directors: string[] = [];
-    const countries: string[] = [];
-    const casts: string[] = [];
+    const originalUrl = req.originalUrl;
+    const structuredData: Array<Record<string, unknown>> = [];
 
-    $('div.content').find('blockquote').find('strong').remove();
+    $('script[type="application/ld+json"]').each((_, el) => {
+        const raw = $(el).text().trim();
 
-    obj['_id'] = originalUrl.split('/').reverse()[0];
-    obj['title'] =
-        $('div.content-poster').find('figure > picture > img').attr('alt') ??
-        '';
-    obj['type'] = 'series';
-    obj['posterImg'] = `https:${$('div.content-poster')
-        .find('figure > picture > img')
-        .attr('src')}`;
+        if (!raw) return;
 
-    $('div.content > div').each((i, el) => {
-        /* eslint-disable */
-        switch ($(el).find('h2').text().toLowerCase()) {
-            case 'durasi':
-                obj['duration'] = $(el).find('h3').text().trim();
-                break;
-            case 'imdb':
-                obj['rating'] = $(el).find('h3:nth-child(2)').text().trim();
-                break;
-            case 'diterbitkan':
-                obj['releaseDate'] = $(el).find('h3').text().trim();
-                break;
-            case 'status':
-                obj['status'] = $(el)
-                    .find('h3 > span')
-                    .text()
-                    .toLowerCase()
-                    .trim();
-                break;
-            case 'sutradara':
-                $(el)
-                    .find('h3 > a')
-                    .each((i, el) => {
-                        directors.push($(el).text().trim());
-                    });
-                break;
-            case 'negara':
-                $(el)
-                    .find('h3 > a')
-                    .each((i, el) => {
-                        countries.push($(el).text());
-                    });
-                break;
-            case 'genre':
-                $(el)
-                    .find('h3 > a')
-                    .each((i, el) => {
-                        genres.push($(el).text());
-                    });
-                break;
-            case 'bintang film':
-                $(el)
-                    .find('h3')
-                    .each((i, el) => {
-                        casts.push($(el).find('a').text());
-                    });
-                break;
-            default:
-                break;
+        try {
+            const parsed = JSON.parse(raw) as
+                | Record<string, unknown>
+                | Array<Record<string, unknown>>;
+
+            if (Array.isArray(parsed)) {
+                structuredData.push(...parsed);
+                return;
+            }
+
+            if (Array.isArray(parsed['@graph'])) {
+                structuredData.push(...(parsed['@graph'] as Array<Record<string, unknown>>));
+                return;
+            }
+
+            structuredData.push(parsed);
+        } catch {
+            return;
         }
-        /* eslint-enable */
     });
 
-    obj['synopsis'] = $('div.content').find('blockquote').text();
-    obj['trailerUrl'] = `${$('div.player-content > iframe').attr('src')}`;
-    obj['genres'] = genres;
-    obj['directors'] = directors;
-    obj['countries'] = countries;
-    obj['casts'] = casts;
+    const seriesSchema = structuredData.find((entry) => {
+        const type = entry['@type'];
 
-    const epsElem: cheerio.Cheerio = $('div.serial-wrapper > div.episode-list');
-    const seasons: ISeasonsList[] = [];
+        return (
+            type === 'TVSeries' ||
+            type === 'Series' ||
+            (Array.isArray(type) &&
+                (type.includes('TVSeries') || type.includes('Series')))
+        );
+    });
 
-    for (let i = epsElem.length; i >= 1; i--) {
-        const obj2 = {} as ISeasonsList;
+    const toTextArray = (value: unknown): string[] => {
+        if (!value) return [];
 
-        obj2['season'] = i;
-        obj2['totalEpisodes'] = $(epsElem[epsElem.length - i]).find(
-            'a.btn-primary'
-        ).length;
+        const values = Array.isArray(value) ? value : [value];
 
-        seasons.push(obj2);
-    }
+        return values
+            .map((item) => {
+                if (typeof item === 'string') return item.trim();
 
-    obj['seasons'] = seasons;
+                if (item && typeof item === 'object' && 'name' in item) {
+                    return String((item as Record<string, unknown>).name ?? '').trim();
+                }
+
+                return '';
+            })
+            .filter(Boolean);
+    };
+
+    obj['_id'] = originalUrl.split('/').reverse()[0];
+    obj['title'] = $('h1').first().text().trim() || String(seriesSchema?.name ?? '');
+    obj['type'] = 'series';
+    obj['posterImg'] =
+        String(seriesSchema?.image ?? '') || $('meta[property="og:image"]').attr('content') || '';
+    obj['duration'] = String(seriesSchema?.duration ?? '').trim();
+    obj['rating'] = String(
+        seriesSchema?.aggregateRating &&
+            typeof seriesSchema.aggregateRating === 'object' &&
+            'ratingValue' in seriesSchema.aggregateRating
+            ? (seriesSchema.aggregateRating as Record<string, unknown>).ratingValue ?? ''
+            : ''
+    ).trim();
+    obj['releaseDate'] = String(seriesSchema?.datePublished ?? '').trim();
+    obj['status'] =
+        $('meta[property="og:video:status"]').attr('content') ??
+        $('span.status').text().trim().toLowerCase() ??
+        '';
+    obj['synopsis'] =
+        String(seriesSchema?.description ?? '') ||
+        $('meta[name="description"]').attr('content') ||
+        '';
+    obj['trailerUrl'] =
+        $('a[href*="youtube.com/watch"]').first().attr('href') ??
+        $('iframe[src*="youtube.com"]').first().attr('src') ??
+        '';
+    obj['genres'] = toTextArray(seriesSchema?.genre);
+    obj['directors'] = toTextArray(seriesSchema?.director);
+    obj['countries'] = toTextArray(seriesSchema?.country);
+    obj['casts'] = toTextArray(seriesSchema?.actor);
+    obj['seasons'] = [];
 
     return obj;
 };

@@ -2,7 +2,6 @@ import cheerio from 'cheerio';
 import { AxiosResponse } from 'axios';
 import { Request } from 'express';
 import { ISetOfGenres } from '@/types';
-import genres from '@/json/genres.json';
 
 /**
  * Scrape a set of genres asynchronously
@@ -21,24 +20,26 @@ export const scrapeSetOfGenres = async (
         protocol,
     } = req;
 
-    $('form.form-filter')
-        .find('div:nth-child(5) > select.form-control > option')
-        .each((i, el) => {
-            const target = $(el).text().split(' ');
-            const obj = {} as ISetOfGenres;
+    const seen = new Set<string>();
 
-            genres.map((genre) => {
-                if (genre === target[0].toLowerCase()) {
-                    obj['parameter'] = genre;
-                    obj['name'] = target[0];
-                    obj['numberOfContents'] = Number(
-                        target[1].substring(1, target[1].length - 1)
-                    );
-                    obj['url'] = `${protocol}://${host}/genres/${genre}`;
+    $('select[name^="genre"] option').each((i, el) => {
+        const parameter = $(el).attr('value')?.trim() ?? '';
+        const name = $(el).text().trim();
 
-                    payload.push(obj);
-                }
-            });
+        if (!parameter || !name || name.startsWith('-') || seen.has(parameter)) {
+            return;
+        }
+
+        seen.add(parameter);
+
+        const obj = {} as ISetOfGenres;
+
+        obj['parameter'] = parameter;
+        obj['name'] = name;
+        obj['numberOfContents'] = 0;
+        obj['url'] = `${protocol}://${host}/genres/${parameter}`;
+
+        payload.push(obj);
         });
 
     return payload;
